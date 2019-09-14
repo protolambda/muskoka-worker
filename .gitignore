@@ -7,3 +7,6 @@
 
 # Test binary, build with `go test -c`
 *.test
+
+test_ds
+test_files

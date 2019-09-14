@@ -1,0 +1,25 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta http-equiv="X-UA-Compatible" content="ie=edge" />
+    <title>Run state transition</title>
+</head>
+<body>
+<p>
+    Upload a pre-state and a block to manually start an Eth2 transition task.
+</p>
+<form
+        enctype="multipart/form-data"
+        action="http://localhost:8080/transition"
+        method="post"
+>
+    <label for="pre-input">Pre state:</label>
+    <input type="file" name="pre" id="pre-input"/>
+    <label for="blocks-input">Blocks:</label>
+    <input type="file" name="blocks" id="blocks-input" multiple />
+    <input type="submit" value="run transition" />
+</form>
+</body>
+</html>
