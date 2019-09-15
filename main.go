@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"flag"
@@ -10,6 +11,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"os/exec"
 	"os/signal"
 	"path"
 	"time"
@@ -17,9 +19,12 @@ import (
 	"github.com/gorilla/mux"
 )
 
+var cliCmdName string
+
 func main() {
 	var wait time.Duration
 	flag.DurationVar(&wait, "graceful-timeout", time.Second * 15, "the duration for which the server gracefully wait for existing connections to finish - e.g. 15s or 1m")
+	flag.StringVar(&cliCmdName, "cli-cmd", "zcli transition blocks", "change the cli cmd to run transitions with")
 	flag.Parse()
 
 	fs := http.FileServer(http.Dir("static"))
@@ -203,9 +208,24 @@ func (tr *TransitionRequest) Load(r *http.Request) error {
 
 func (tr *TransitionRequest) Execute() {
 	log.Println("executing request")
-	// TODO trigger CLI to run transition in Go routine
-	// TODO upload transition result to google cloud bucket
+	var args []string
+	args = append(args, "--pre", path.Join(tr.storageDir, "pre.ssz"), "--post", path.Join(tr.storageDir, "post.ssz"))
+	for i := uint(0); i < tr.blocks; i++ {
+		args = append(args, path.Join(tr.storageDir, fmt.Sprintf("block_%d.ssz", i)))
+	}
+	// trigger CLI to run transition in Go routine
+	cmd := exec.Command(cliCmdName, args...)
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	err := cmd.Run()
+	if err != nil {
+		log.Printf("transition command failed: %s", err)
+	}
+	outStr, errStr := string(stdout.Bytes()), string(stderr.Bytes())
+	fmt.Printf("out:\n%s\nerr:\n%s\n", outStr, errStr)
 
+	// TODO upload transition result to google cloud bucket
 	// TODO after uploading to bucket, call a google cloud function that diffs it against the other currently uploaded states from other clients.
 	// TODO upload diffs to cloud bucket or datastore (TBD)
 	// TODO remove temporary files (blocks, pre, post)
