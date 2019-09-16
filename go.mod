@@ -1,4 +1,4 @@
-module eth2-test-api
+module github.com/protolambda/muskoka-worker
 
 go 1.12
 

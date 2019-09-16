@@ -151,7 +151,12 @@ func (tr *TransitionRequest) Register() error {
 	return nil
 }
 
-func (tr *TransitionRequest) Load(r *http.Request) error {
+func (tr *TransitionRequest) LoadFromBucket() error {
+	// TODO
+	return nil
+}
+
+func (tr *TransitionRequest) LoadFromMultipart(r *http.Request) error {
 	err := r.ParseMultipartForm(maxUploadMem)
 	if err != nil {
 		return fmt.Errorf("cannot parse multipart upload: %v", err)
@@ -174,11 +179,16 @@ func (tr *TransitionRequest) Load(r *http.Request) error {
 		if err != nil {
 			return fmt.Errorf("cannot create pre file: %v", err)
 		}
-		defer outFile.Close()
+		f, err := preUpload.Open()
+		if _, err = io.Copy(outFile, f); err != nil {
+			return err
+		}
+		_ = f.Close()
+		outFile.Close()
 	}
 	// parse and store blocks
 	if blocks, ok := r.MultipartForm.File["blocks"]; !ok {
-		return errors.New("no pre-state was specified")
+		return errors.New("no blocks were specified")
 	} else {
 		if len(blocks) > 16 {
 			return fmt.Errorf("cannot process high amount of blocks; %v", len(blocks))
@@ -188,11 +198,16 @@ func (tr *TransitionRequest) Load(r *http.Request) error {
 			log.Printf("block %d upload header: %v", i, b.Header)
 			outFile, err := os.OpenFile(path.Join(tr.storageDir, fmt.Sprintf("block_%d.ssz", i)), os.O_WRONLY|os.O_CREATE, 0666)
 			if err != nil {
-				loopErr = fmt.Errorf("cannot create block %d file: %v", i, err)
-				break
+				return fmt.Errorf("cannot create block %d file: %v", i, err)
 			}
 			f, err := b.Open()
+			if err != nil {
+				_ = outFile.Close()
+				return err
+			}
 			if _, err = io.Copy(outFile, f); err != nil {
+				_ = f.Close()
+				_ = outFile.Close()
 				return err
 			}
 			_ = f.Close()
@@ -202,6 +217,9 @@ func (tr *TransitionRequest) Load(r *http.Request) error {
 		if loopErr != nil {
 			return loopErr
 		}
+	}
+	if err := r.MultipartForm.RemoveAll(); err != nil {
+		return fmt.Errorf("cannot cleanup multi-part upload: %v", err)
 	}
 	return nil
 }
