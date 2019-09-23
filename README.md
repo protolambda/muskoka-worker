@@ -20,7 +20,8 @@ Options:
 | `str`  | `cli-cmd`        | `zcli transition blocks`         | change the cli cmd to run transitions with |
 | `str`  | `gcp-project-id` | `muskoka`                        | change the google cloud project to connect with pubsub to |
 | `str`  | `sub-id`         | `poc-v0.8.3`                     | the pubsub subscription to listen for tasks from |
-| `str`  | `client-version` | `eth2team_v0.1.2_v0.3.4_1a2b3c4` | the vendor name, targeted spec version, client version, and git commit hash start. In this order, separated by underscores. |
+| `str`  | `client-vendor`  | `eth2team`                       | the client vendor name; 'zrnt', 'lighthouse', etc. |
+| `str`  | `client-version` | `v0.1.2_1a2b3c4`                 | the client version, and git commit hash start. In this order, separated by an underscore. |
 | `bool` | `cleanup-tmp`    | `true`                           | if the temporary files should be removed after uploading the results of a transition |
 
 

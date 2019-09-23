@@ -27,6 +27,7 @@ var cliCmdName string
 var gcpProjectID string
 var subId string
 var clientVersion string
+var clientVendor string
 var cleanupTempFiles bool
 
 func main() {
@@ -35,7 +36,8 @@ func main() {
 	flag.StringVar(&cliCmdName, "cli-cmd", "zcli transition blocks", "change the cli cmd to run transitions with")
 	flag.StringVar(&gcpProjectID, "gcp-project-id", "muskoka", "change the google cloud project to connect with pubsub to")
 	flag.StringVar(&subId, "sub-id", "poc-v0.8.3", "the pubsub subscription to listen for tasks from")
-	flag.StringVar(&clientVersion, "client-version", "eth2team_v0.1.2_v0.3.4_1a2b3c4", "the vendor name, targeted spec version, client version, and git commit hash start. In this order, separated by underscores.")
+	flag.StringVar(&clientVendor, "client-vendor", "eth2team", "the client vendor name; 'zrnt', 'lighthouse', etc.")
+	flag.StringVar(&clientVersion, "client-version", "v0.1.2_1a2b3c4", "the client version, and git commit hash start. In this order, separated by an underscore.")
 	flag.BoolVar(&cleanupTempFiles, "cleanup-tmp", true, "if the temporary files should be removed after uploading the results of a transition")
 	flag.Parse()
 
@@ -139,7 +141,9 @@ type ResultMsg struct {
 	Success bool `json:"success"`
 	// the flat-hash of the post-state SSZ bytes, for quickly finding different results.
 	PostHash string `json:"post-hash"`
-	// identifies the client software running the transition
+	// the vendor name of the client; 'zrnt', 'lighthouse', etc.
+	ClientVendor string `json:"client-vendor"`
+	// the version number of the client, may contain a git commit hash
 	ClientVersion string `json:"client-version"`
 	// identifies the transition task
 	Key string `json:"key"`
@@ -198,6 +202,7 @@ func (tr *TransitionMsg) Execute() error {
 	reqMsg := ResultMsg{
 		Success:       success,
 		PostHash:      fmt.Sprintf("0x%x", postHash),
+		ClientVendor:  clientVendor,
 		ClientVersion: clientVersion,
 		Key:           tr.Key,
 	}
