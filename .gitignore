@@ -9,3 +9,6 @@
 *.test
 
 test_files
+
+# keys for testing etc.
+*.key.json

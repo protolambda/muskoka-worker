@@ -15,12 +15,13 @@ import (
 	"os/exec"
 	"os/signal"
 	"path"
+	"strings"
 	"time"
 )
 
 const storageAPI = "https://storage.googleapis.com"
-const bucketName = "transitions"
 
+var bucketName string
 var resultsAPI string
 var cliCmdName string
 var gcpProjectID string
@@ -29,6 +30,7 @@ var clientVersion string
 var cleanupTempFiles bool
 
 func main() {
+	flag.StringVar(&bucketName, "bucket-name", "muskoka-transitions", "the name of the storage bucket to download input data from")
 	flag.StringVar(&resultsAPI, "results-api", "https://example.com/foobar", "the API endpoint to notify of the transition results, and retrieve signed urls from for output uploading")
 	flag.StringVar(&cliCmdName, "cli-cmd", "zcli transition blocks", "change the cli cmd to run transitions with")
 	flag.StringVar(&gcpProjectID, "gcp-project-id", "muskoka", "change the google cloud project to connect with pubsub to")
@@ -152,13 +154,16 @@ type ResultResponseMsg struct {
 func (tr *TransitionMsg) Execute() error {
 	log.Printf("executing request: %s (%d blocks, spec version %s)\n", tr.Key, tr.Blocks, tr.SpecVersion)
 	transitionDirPath := tr.DirPath()
+	cmdParts := strings.Split(cliCmdName, " ")
+	cmdName := cmdParts[0]
 	var args []string
+	args = append(args, cmdParts[1:]...)
 	args = append(args, "--pre", path.Join(transitionDirPath, "pre.ssz"), "--post", path.Join(transitionDirPath, "post.ssz"))
 	for i := 0; i < tr.Blocks; i++ {
 		args = append(args, path.Join(transitionDirPath, fmt.Sprintf("block_%d.ssz", i)))
 	}
 	// trigger CLI to run transition in Go routine
-	cmd := exec.Command(cliCmdName, args...)
+	cmd := exec.Command(cmdName, args...)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
@@ -185,13 +190,14 @@ func (tr *TransitionMsg) Execute() error {
 			log.Printf("failed to hash post state: %v", err)
 		}
 		_ = postF.Close()
+		copy(postHash[:], h.Sum(nil))
 	}
 
 	var reqBuf bytes.Buffer
 	enc := json.NewEncoder(&reqBuf)
 	reqMsg := ResultMsg{
 		Success:       success,
-		PostHash:      fmt.Sprintf("%x", postHash),
+		PostHash:      fmt.Sprintf("0x%x", postHash),
 		ClientVersion: clientVersion,
 		Key:           tr.Key,
 	}
@@ -211,6 +217,11 @@ func (tr *TransitionMsg) Execute() error {
 	if err != nil {
 		return fmt.Errorf("failed to make result API request: %v", err)
 	}
+	if res.StatusCode != 200 {
+		var buf bytes.Buffer
+		_, _ = io.Copy(&buf, res.Body)
+		return fmt.Errorf("result API request was denied (status %d): %s", res.StatusCode, string(buf.Bytes()))
+	}
 	var respMsg ResultResponseMsg
 	dec := json.NewDecoder(res.Body)
 	if err := dec.Decode(&respMsg); err != nil {
@@ -222,28 +233,45 @@ func (tr *TransitionMsg) Execute() error {
 		if err != nil {
 			log.Printf("cannot open post state to upload to cloud")
 		} else {
-			if resp, err := http.Post(respMsg.PostStateURL, "application/octet-stream", f); err != nil {
-				log.Printf("could not upload post-state: %v", err)
-			} else if resp.StatusCode != 200 {
-				log.Printf("upload post-state was denied: %v", resp)
+			req, err := http.NewRequest(http.MethodPut, respMsg.PostStateURL, f)
+			if err != nil {
+				log.Printf("coult not create request to upload post-state: %v", err)
+			} else {
+				req.Header.Set("Content-Type", "application/octet-stream")
+				if resp, err := client.Do(req); err != nil {
+					log.Printf("could not upload post-state: %v", err)
+				} else if resp.StatusCode != 200 {
+					log.Printf("upload post-state was denied: %v", resp)
+				}
 			}
-			defer f.Close()
+			_ = f.Close()
 		}
 	}
 	{
 		// try to upload out log
-		if resp, err := http.Post(respMsg.OutLogURL, "text/plain", &stdout); err != nil {
-			log.Printf("could not upload std-out: %v", err)
-		} else if resp.StatusCode != 200 {
-			log.Printf("upload std-out was denied: %v", resp)
+		req, err := http.NewRequest(http.MethodPut, respMsg.OutLogURL, &stdout)
+		if err != nil {
+			log.Printf("coult not create request to upload std-out: %v", err)
+		} else {
+			req.Header.Set("Content-Type", "text/plain; charset=utf-8")
+			if resp, err := client.Do(req); err != nil {
+				log.Printf("could not upload std-out: %v", err)
+			} else if resp.StatusCode != 200 {
+				log.Printf("upload std-out was denied: %v", resp)
+			}
 		}
 	}
 	{
-		// try to upload err log
-		if resp, err := http.Post(respMsg.ErrLogURL, "text/plain", &stderr); err != nil {
-			log.Printf("could not upload std-err: %v", err)
-		} else if resp.StatusCode != 200 {
-			log.Printf("upload std-err was denied: %v", resp)
+		req, err := http.NewRequest(http.MethodPut, respMsg.ErrLogURL, &stderr)
+		if err != nil {
+			log.Printf("coult not create request to upload std-out: %v", err)
+		} else {
+			req.Header.Set("Content-Type", "text/plain; charset=utf-8")
+			if resp, err := client.Do(req); err != nil {
+				log.Printf("could not upload std-err: %v", err)
+			} else if resp.StatusCode != 200 {
+				log.Printf("upload std-err was denied: %v", resp)
+			}
 		}
 	}
 	log.Printf("completed execution of %s.", tr.Key)
