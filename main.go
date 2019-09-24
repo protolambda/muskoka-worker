@@ -62,16 +62,15 @@ func main() {
 	}
 	// configure pubsub receiver
 	sub.ReceiveSettings = pubsub.ReceiveSettings{
-		MaxExtension:           0, // triggers default
+		MaxExtension:           -1,
 		MaxOutstandingMessages: 20,
 		MaxOutstandingBytes:    1 << 10,
 		NumGoroutines:          4,
-		Synchronous:            false,
+		Synchronous:            true,
 	}
 	// try receiving messages
 	{
-		ctx, _ := context.WithTimeout(mainContext, time.Second*15)
-		if err := sub.Receive(ctx, func(ctx context.Context, message *pubsub.Message) {
+		if err := sub.Receive(context.Background(), func(ctx context.Context, message *pubsub.Message) {
 			var transitionMsg TransitionMsg
 			dec := json.NewDecoder(bytes.NewReader(message.Data))
 			if err := dec.Decode(&transitionMsg); err != nil {
