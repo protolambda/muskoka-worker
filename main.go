@@ -4,7 +4,9 @@ import (
 	"bytes"
 	"cloud.google.com/go/pubsub"
 	"context"
+	"crypto/rand"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -77,6 +79,9 @@ func main() {
 				message.Nack()
 				return
 			}
+			// Give the message a unique ID. Allow for processing of the same message in parallel
+			// (if event is fired multiple times, or different workers are processing it on the same host).
+			transitionMsg.TmpKey = uniqueID()
 			log.Printf("processing %s (%s)", transitionMsg.Key, transitionMsg.SpecVersion)
 			if err := transitionMsg.LoadFromBucket(); err != nil {
 				log.Printf("failed to load data from bucket for %s: %v", transitionMsg.Key, err)
@@ -108,10 +113,11 @@ type TransitionMsg struct {
 	Blocks      int    `json:"blocks"`
 	SpecVersion string `json:"spec-version"`
 	Key         string `json:"key"`
+	TmpKey      string `json:"-"`
 }
 
 func (tr *TransitionMsg) DirPath() string {
-	return path.Join(os.TempDir(), tr.Key)
+	return path.Join(os.TempDir(), tr.Key, tr.TmpKey)
 }
 
 func (tr *TransitionMsg) BucketUrlStart() string {
@@ -308,4 +314,12 @@ func downloadFile(filepath string, url string) (err error) {
 	}
 	_, err = io.Copy(out, resp.Body)
 	return err
+}
+
+func uniqueID() string {
+	b := make([]byte, 32)
+	if _, err := rand.Read(b); err != nil {
+		panic(fmt.Sprintf("crypto/rand.Read error: %v", err))
+	}
+	return base64.RawURLEncoding.EncodeToString(b)
 }
