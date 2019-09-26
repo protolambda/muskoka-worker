@@ -29,7 +29,7 @@ var cliCmdName string
 var gcpProjectID string
 var subId string
 var clientVersion string
-var clientVendor string
+var clientName string
 var cleanupTempFiles bool
 
 func main() {
@@ -38,7 +38,7 @@ func main() {
 	flag.StringVar(&cliCmdName, "cli-cmd", "zcli transition blocks", "change the cli cmd to run transitions with")
 	flag.StringVar(&gcpProjectID, "gcp-project-id", "muskoka", "change the google cloud project to connect with pubsub to")
 	flag.StringVar(&subId, "sub-id", "poc-v0.8.3", "the pubsub subscription to listen for tasks from")
-	flag.StringVar(&clientVendor, "client-vendor", "eth2team", "the client vendor name; 'zrnt', 'lighthouse', etc.")
+	flag.StringVar(&clientName, "client-name", "eth2team", "the client name; 'zrnt', 'lighthouse', etc.")
 	flag.StringVar(&clientVersion, "client-version", "v0.1.2_1a2b3c4", "the client version, and git commit hash start. In this order, separated by an underscore.")
 	flag.BoolVar(&cleanupTempFiles, "cleanup-tmp", true, "if the temporary files should be removed after uploading the results of a transition")
 	flag.Parse()
@@ -54,7 +54,7 @@ func main() {
 	// check if the subscription exists
 	{
 		ctx, _ := context.WithTimeout(mainContext, time.Second*15)
-		if exists, err := sub.Exists(ctx, ); err != nil {
+		if exists, err := sub.Exists(ctx); err != nil {
 			log.Fatalf("could not check if pubsub subscription exists")
 		} else if !exists {
 			log.Fatalf("subscription %s does not exist. Either the worker was misconfigured (try --sub-id) or a new subscription needs to be created and permissioned.", subId)
@@ -146,8 +146,8 @@ type ResultMsg struct {
 	Success bool `json:"success"`
 	// the flat-hash of the post-state SSZ bytes, for quickly finding different results.
 	PostHash string `json:"post-hash"`
-	// the vendor name of the client; 'zrnt', 'lighthouse', etc.
-	ClientVendor string `json:"client-vendor"`
+	// the name of the client; 'zrnt', 'lighthouse', etc.
+	ClientName string `json:"client-name"`
 	// the version number of the client, may contain a git commit hash
 	ClientVersion string `json:"client-version"`
 	// identifies the transition task
@@ -207,7 +207,7 @@ func (tr *TransitionMsg) Execute() error {
 	reqMsg := ResultMsg{
 		Success:       success,
 		PostHash:      fmt.Sprintf("0x%x", postHash),
-		ClientVendor:  clientVendor,
+		ClientName:    clientName,
 		ClientVersion: clientVersion,
 		Key:           tr.Key,
 	}
