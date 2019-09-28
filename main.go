@@ -27,17 +27,21 @@ var bucketName string
 var resultsAPI string
 var cliCmdName string
 var gcpProjectID string
-var subId string
+var specVersion string
+var specConfig string
+var workerID string
 var clientVersion string
 var clientName string
 var cleanupTempFiles bool
 
 func main() {
 	flag.StringVar(&bucketName, "bucket-name", "muskoka-transitions", "the name of the storage bucket to download input data from")
+	flag.StringVar(&specVersion, "spec-version", "v0.8.3", "the spec-version to target")
+	flag.StringVar(&specConfig, "spec-config", "minimal", "the config name to target")
 	flag.StringVar(&resultsAPI, "results-api", "https://example.com/foobar", "the API endpoint to notify of the transition results, and retrieve signed urls from for output uploading")
 	flag.StringVar(&cliCmdName, "cli-cmd", "zcli transition blocks", "change the cli cmd to run transitions with")
 	flag.StringVar(&gcpProjectID, "gcp-project-id", "muskoka", "change the google cloud project to connect with pubsub to")
-	flag.StringVar(&subId, "sub-id", "poc-v0.8.3", "the pubsub subscription to listen for tasks from")
+	flag.StringVar(&workerID, "worker-id", "poc", "the name of the worker. Pubsub subscription id is formatted as: <spec version>~<spec config>~<client name>~<worker id> to get a unique subscription name")
 	flag.StringVar(&clientName, "client-name", "eth2team", "the client name; 'zrnt', 'lighthouse', etc.")
 	flag.StringVar(&clientVersion, "client-version", "v0.1.2_1a2b3c4", "the client version, and git commit hash start. In this order, separated by an underscore.")
 	flag.BoolVar(&cleanupTempFiles, "cleanup-tmp", true, "if the temporary files should be removed after uploading the results of a transition")
@@ -50,6 +54,7 @@ func main() {
 	if err != nil {
 		log.Fatalf("Failed to create pubsub client: %v", err)
 	}
+	subId := fmt.Sprintf("%s~%s~%s~%s", specVersion, specConfig, clientName, workerID)
 	sub := pubsubClient.Subscription(subId)
 	// check if the subscription exists
 	{
@@ -76,6 +81,16 @@ func main() {
 			if err := dec.Decode(&transitionMsg); err != nil {
 				log.Printf("failed to decode message JSON: %v (msg: %s)", err, message.Data)
 				message.Nack()
+				return
+			}
+			if transitionMsg.SpecVersion != specVersion {
+				log.Printf("WARNING: received pubsub transition for spec version: %s, but was expecting %s. Ack, but ignoring actual task.", transitionMsg.SpecVersion, specVersion)
+				message.Ack()
+				return
+			}
+			if transitionMsg.SpecConfig != specConfig {
+				log.Printf("WARNING: received pubsub transition for spec config: %s, but was expecting %s. Ack, but ignoring actual task.", transitionMsg.SpecConfig, specConfig)
+				message.Ack()
 				return
 			}
 			// Give the message a unique ID. Allow for processing of the same message in parallel
@@ -111,6 +126,7 @@ func main() {
 type TransitionMsg struct {
 	Blocks      int    `json:"blocks"`
 	SpecVersion string `json:"spec-version"`
+	SpecConfig  string `json:"spec-config"`
 	Key         string `json:"key"`
 	TmpKey      string `json:"-"`
 }
