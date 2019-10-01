@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"cloud.google.com/go/pubsub"
+	"cloud.google.com/go/storage"
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
@@ -12,7 +13,6 @@ import (
 	"fmt"
 	"io"
 	"log"
-	"net/http"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -21,10 +21,7 @@ import (
 	"time"
 )
 
-const storageAPI = "https://storage.googleapis.com"
-
-var bucketName string
-var resultsAPI string
+var inputsBucketName string
 var cliCmdName string
 var gcpProjectID string
 var specVersion string
@@ -32,35 +29,62 @@ var specConfig string
 var workerID string
 var clientVersion string
 var clientName string
+var resultsBucketName string
 var cleanupTempFiles bool
 
+var inputsBucket *storage.BucketHandle
+var resultsBucket *storage.BucketHandle
+var resultsTopic *pubsub.Topic
+
 func main() {
-	flag.StringVar(&bucketName, "bucket-name", "muskoka-transitions", "the name of the storage bucket to download input data from")
+	flag.StringVar(&inputsBucketName, "inputs-bucket", "muskoka-transitions", "the name of the storage bucket to download input data from")
 	flag.StringVar(&specVersion, "spec-version", "v0.8.3", "the spec-version to target")
 	flag.StringVar(&specConfig, "spec-config", "minimal", "the config name to target")
-	flag.StringVar(&resultsAPI, "results-api", "https://example.com/foobar", "the API endpoint to notify of the transition results, and retrieve signed urls from for output uploading")
 	flag.StringVar(&cliCmdName, "cli-cmd", "zcli transition blocks", "change the cli cmd to run transitions with")
 	flag.StringVar(&gcpProjectID, "gcp-project-id", "muskoka", "change the google cloud project to connect with pubsub to")
 	flag.StringVar(&workerID, "worker-id", "poc", "the name of the worker. Pubsub subscription id is formatted as: <spec version>~<spec config>~<client name>~<worker id> to get a unique subscription name")
 	flag.StringVar(&clientName, "client-name", "eth2team", "the client name; 'zrnt', 'lighthouse', etc.")
+	flag.StringVar(&resultsBucketName, "results-bucket", "results-eth2team", "the name of the bucket to upload the results to.")
 	flag.StringVar(&clientVersion, "client-version", "v0.1.2_1a2b3c4", "the client version, and git commit hash start. In this order, separated by an underscore.")
 	flag.BoolVar(&cleanupTempFiles, "cleanup-tmp", true, "if the temporary files should be removed after uploading the results of a transition")
 	flag.Parse()
 
 	mainContext, cancel := context.WithCancel(context.Background())
 
+	// storage
+	{
+		storageClient, err := storage.NewClient(mainContext)
+		if err != nil {
+			log.Fatalf("Failed to create storage client: %v", err)
+		}
+		inputsBucket = storageClient.Bucket(inputsBucketName)
+		resultsBucket = storageClient.Bucket(resultsBucketName)
+	}
+
 	// Setup pubsub client
 	pubsubClient, err := pubsub.NewClient(mainContext, gcpProjectID)
 	if err != nil {
 		log.Fatalf("Failed to create pubsub client: %v", err)
 	}
+
+	resultsTopic = pubsubClient.Topic(fmt.Sprintf("results~%s", clientName))
+	{
+		ctx, _ := context.WithTimeout(context.Background(), time.Second*5)
+		ok, err := resultsTopic.Exists(ctx)
+		if err != nil {
+			log.Fatalf("Could not check if spec version + config is a valid topic: %v", err)
+		} else if !ok {
+			log.Fatalf("Cannot recognize provided options to find results topic: %s", resultsTopic.ID())
+		}
+	}
+
 	subId := fmt.Sprintf("%s~%s~%s~%s", specVersion, specConfig, clientName, workerID)
 	sub := pubsubClient.Subscription(subId)
 	// check if the subscription exists
 	{
-		ctx, _ := context.WithTimeout(mainContext, time.Second*15)
+		ctx, _ := context.WithTimeout(context.Background(), time.Second*15)
 		if exists, err := sub.Exists(ctx); err != nil {
-			log.Fatalf("could not check if pubsub subscription exists")
+			log.Fatalf("could not check if pubsub subscription exists: %v\n", err)
 		} else if !exists {
 			log.Fatalf("subscription %s does not exist. Either the worker was misconfigured (try --sub-id) or a new subscription needs to be created and permissioned.", subId)
 		}
@@ -95,7 +119,7 @@ func main() {
 			}
 			// Give the message a unique ID. Allow for processing of the same message in parallel
 			// (if event is fired multiple times, or different workers are processing it on the same host).
-			transitionMsg.TmpKey = uniqueID()
+			transitionMsg.ResultKey = uniqueID()
 			log.Printf("processing %s (%s)", transitionMsg.Key, transitionMsg.SpecVersion)
 			if err := transitionMsg.LoadFromBucket(); err != nil {
 				log.Printf("failed to load data from bucket for %s: %v", transitionMsg.Key, err)
@@ -128,29 +152,33 @@ type TransitionMsg struct {
 	SpecVersion string `json:"spec-version"`
 	SpecConfig  string `json:"spec-config"`
 	Key         string `json:"key"`
-	TmpKey      string `json:"-"`
+	ResultKey   string `json:"-"`
 }
 
 func (tr *TransitionMsg) DirPath() string {
-	return path.Join(os.TempDir(), tr.Key, tr.TmpKey)
+	return path.Join(os.TempDir(), tr.Key, tr.ResultKey)
 }
 
-func (tr *TransitionMsg) BucketUrlStart() string {
-	return fmt.Sprintf("%s/%s/%s/%s", storageAPI, bucketName, tr.SpecVersion, tr.Key)
+func (tr *TransitionMsg) InputsBucketPathStart() string {
+	return fmt.Sprintf("%s/%s", tr.SpecVersion, tr.Key)
+}
+
+func (tr *TransitionMsg) ResultsBucketPathStart() string {
+	return fmt.Sprintf("%s/%s/%s/%s/%s", tr.SpecVersion, tr.Key, clientName, clientVersion, tr.ResultKey)
 }
 
 func (tr *TransitionMsg) LoadFromBucket() error {
-	startUrl := tr.BucketUrlStart()
 	startFilepath := tr.DirPath()
 	if err := os.MkdirAll(startFilepath, os.ModePerm); err != nil {
 		return fmt.Errorf("failed to make directory to download files to: %s: %v", startFilepath, err)
 	}
-	if err := downloadFile(path.Join(startFilepath, "pre.ssz"), startUrl+"/pre.ssz"); err != nil {
+	startBucketPath := tr.InputsBucketPathStart()
+	if err := downloadInputFile(path.Join(startFilepath, "pre.ssz"), startBucketPath+"/pre.ssz"); err != nil {
 		return fmt.Errorf("failed to load pre.ssz for spec version %s task %s: %v", tr.SpecVersion, tr.Key, err)
 	}
 	for i := 0; i < tr.Blocks; i++ {
 		blockName := fmt.Sprintf("block_%d.ssz", i)
-		if err := downloadFile(path.Join(startFilepath, blockName), startUrl+"/"+blockName); err != nil {
+		if err := downloadInputFile(path.Join(startFilepath, blockName), startBucketPath+"/"+blockName); err != nil {
 			return fmt.Errorf("failed to load pre.ssz for spec version %s task %s: %v", tr.SpecVersion, tr.Key, err)
 		}
 	}
@@ -168,12 +196,17 @@ type ResultMsg struct {
 	ClientVersion string `json:"client-version"`
 	// identifies the transition task
 	Key string `json:"key"`
+	// Result files
+	Files ResultFilesData `json:"files"`
 }
 
-type ResultResponseMsg struct {
-	PostStateURL string `json:"post-state"`
-	ErrLogURL    string `json:"err-log"`
-	OutLogURL    string `json:"out-log"`
+type ResultFilesData struct {
+	// bucket
+	Bucket string `json:"bucket"`
+	// object path within bucket
+	PostState string `json:"post-state"`
+	ErrLog    string `json:"err-log"`
+	OutLog    string `json:"out-log"`
 }
 
 func (tr *TransitionMsg) Execute() error {
@@ -218,89 +251,68 @@ func (tr *TransitionMsg) Execute() error {
 		copy(postHash[:], h.Sum(nil))
 	}
 
-	var reqBuf bytes.Buffer
-	enc := json.NewEncoder(&reqBuf)
-	reqMsg := ResultMsg{
-		Success:       success,
-		PostHash:      fmt.Sprintf("0x%x", postHash),
-		ClientName:    clientName,
-		ClientVersion: clientVersion,
-		Key:           tr.Key,
-	}
-	if err := enc.Encode(&reqMsg); err != nil {
-		log.Printf("failed to encode result to JSON message.")
-		return fmt.Errorf("failed to encode result to JSON message: %v", err)
-	}
-	client := &http.Client{
-		Timeout: time.Second * 15,
-	}
-	req, err := http.NewRequest("GET", resultsAPI, &reqBuf)
-	if err != nil {
-		return fmt.Errorf("failed to prepare result API request: %v", err)
-	}
-	// TODO authenticate request
-	res, err := client.Do(req)
-	if err != nil {
-		return fmt.Errorf("failed to make result API request: %v", err)
-	}
-	if res.StatusCode != 200 {
-		var buf bytes.Buffer
-		_, _ = io.Copy(&buf, res.Body)
-		return fmt.Errorf("result API request was denied (status %d): %s", res.StatusCode, string(buf.Bytes()))
-	}
-	var respMsg ResultResponseMsg
-	dec := json.NewDecoder(res.Body)
-	if err := dec.Decode(&respMsg); err != nil {
-		return fmt.Errorf("failed to decode result API response: %v", err)
+	// upload results
+	bucketPathStart := tr.ResultsBucketPathStart()
+	resultFiles := ResultFilesData{
+		Bucket:    resultsBucketName,
+		PostState: bucketPathStart + "/post.ssz",
+		ErrLog:    bucketPathStart + "/std_out_log.txt",
+		OutLog:    bucketPathStart + "/std_err_log.txt",
 	}
 	{
-		// try to upload post state, if it exists
-		f, err := os.Open(path.Join(transitionDirPath, "post.ssz"))
-		if err != nil {
-			log.Printf("cannot open post state to upload to cloud")
-		} else {
-			req, err := http.NewRequest(http.MethodPut, respMsg.PostStateURL, f)
+		{
+			ctx, _ := context.WithTimeout(context.Background(), time.Second*10)
+			w := resultsBucket.Object(resultFiles.PostState).NewWriter(ctx)
+			// try to upload post state, if it exists
+			f, err := os.Open(path.Join(transitionDirPath, "post.ssz"))
 			if err != nil {
-				log.Printf("coult not create request to upload post-state: %v", err)
+				log.Printf("cannot open post state to upload to cloud")
 			} else {
-				req.Header.Set("Content-Type", "application/octet-stream")
-				if resp, err := client.Do(req); err != nil {
+				if _, err := io.Copy(w, f); err != nil {
 					log.Printf("could not upload post-state: %v", err)
-				} else if resp.StatusCode != 200 {
-					log.Printf("upload post-state was denied: %v", resp)
 				}
+				_ = f.Close()
 			}
-			_ = f.Close()
+			_ = w.Close()
 		}
-	}
-	{
-		// try to upload out log
-		req, err := http.NewRequest(http.MethodPut, respMsg.OutLogURL, &stdout)
-		if err != nil {
-			log.Printf("coult not create request to upload std-out: %v", err)
-		} else {
-			req.Header.Set("Content-Type", "text/plain; charset=utf-8")
-			if resp, err := client.Do(req); err != nil {
+		{
+			ctx, _ := context.WithTimeout(context.Background(), time.Second*10)
+			w := resultsBucket.Object(resultFiles.OutLog).NewWriter(ctx)
+			if _, err := io.Copy(w, &stdout); err != nil {
 				log.Printf("could not upload std-out: %v", err)
-			} else if resp.StatusCode != 200 {
-				log.Printf("upload std-out was denied: %v", resp)
 			}
+			_ = w.Close()
 		}
-	}
-	{
-		req, err := http.NewRequest(http.MethodPut, respMsg.ErrLogURL, &stderr)
-		if err != nil {
-			log.Printf("coult not create request to upload std-out: %v", err)
-		} else {
-			req.Header.Set("Content-Type", "text/plain; charset=utf-8")
-			if resp, err := client.Do(req); err != nil {
+		{
+			ctx, _ := context.WithTimeout(context.Background(), time.Second*10)
+			w := resultsBucket.Object(resultFiles.ErrLog).NewWriter(ctx)
+			if _, err := io.Copy(w, &stderr); err != nil {
 				log.Printf("could not upload std-err: %v", err)
-			} else if resp.StatusCode != 200 {
-				log.Printf("upload std-err was denied: %v", resp)
 			}
+			_ = w.Close()
 		}
 	}
-	log.Printf("completed execution of %s.", tr.Key)
+
+	{
+		var reqBuf bytes.Buffer
+		enc := json.NewEncoder(&reqBuf)
+		reqMsg := ResultMsg{
+			Success:       success,
+			PostHash:      fmt.Sprintf("0x%x", postHash),
+			ClientName:    clientName,
+			ClientVersion: clientVersion,
+			Key:           tr.Key,
+			Files:         resultFiles,
+		}
+		if err := enc.Encode(&reqMsg); err != nil {
+			log.Printf("failed to encode result to JSON message.")
+			return fmt.Errorf("failed to encode result to JSON message: %v", err)
+		}
+		ctx, _ := context.WithTimeout(context.Background(), time.Second*5)
+		<-resultsTopic.Publish(ctx, &pubsub.Message{
+			Data: reqBuf.Bytes(),
+		}).Ready()
+	}
 
 	if cleanupTempFiles {
 		// remove temporary files (blocks, pre, post)
@@ -311,23 +323,21 @@ func (tr *TransitionMsg) Execute() error {
 	return nil
 }
 
-func downloadFile(filepath string, url string) (err error) {
+func downloadInputFile(filepath string, bucketpath string) (err error) {
 	out, err := os.Create(filepath)
 	if err != nil {
 		return err
 	}
 	defer out.Close()
 
-	resp, err := http.Get(url)
+	ctx, _ := context.WithTimeout(context.Background(), time.Second*10)
+	r, err := inputsBucket.Object(bucketpath).NewReader(ctx)
 	if err != nil {
 		return err
 	}
-	defer resp.Body.Close()
+	defer r.Close()
 
-	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("bad status: %s", resp.Status)
-	}
-	_, err = io.Copy(out, resp.Body)
+	_, err = io.Copy(out, r)
 	return err
 }
 
