@@ -21,6 +21,8 @@ import (
 	"time"
 )
 
+const storageAPI = "https://storage.googleapis.com/"
+
 var inputsBucketName string
 var cliCmdName string
 var gcpProjectID string
@@ -86,7 +88,7 @@ func main() {
 		if exists, err := sub.Exists(ctx); err != nil {
 			log.Fatalf("could not check if pubsub subscription exists: %v\n", err)
 		} else if !exists {
-			log.Fatalf("subscription %s does not exist. Either the worker was misconfigured (try --sub-id) or a new subscription needs to be created and permissioned.", subId)
+			log.Fatalf("subscription %s does not exist. Either the worker was misconfigured (try --spec-version, --spec-config, --client-name, --worker-id) or a new subscription needs to be created and permissioned.", subId)
 		}
 	}
 	// configure pubsub receiver
@@ -201,9 +203,7 @@ type ResultMsg struct {
 }
 
 type ResultFilesData struct {
-	// bucket
-	Bucket string `json:"bucket"`
-	// object path within bucket
+	// urls to the files
 	PostState string `json:"post-state"`
 	ErrLog    string `json:"err-log"`
 	OutLog    string `json:"out-log"`
@@ -254,10 +254,9 @@ func (tr *TransitionMsg) Execute() error {
 	// upload results
 	bucketPathStart := tr.ResultsBucketPathStart()
 	resultFiles := ResultFilesData{
-		Bucket:    resultsBucketName,
-		PostState: bucketPathStart + "/post.ssz",
-		ErrLog:    bucketPathStart + "/std_out_log.txt",
-		OutLog:    bucketPathStart + "/std_err_log.txt",
+		PostState: fmt.Sprintf("%s/%s/%s/post.ssz", storageAPI, resultsBucketName, bucketPathStart),
+		ErrLog:    fmt.Sprintf("%s/%s/%s/std_out_log.txt", storageAPI, resultsBucketName, bucketPathStart),
+		OutLog:    fmt.Sprintf("%s/%s/%s/std_err_log.txt", storageAPI, resultsBucketName, bucketPathStart),
 	}
 	{
 		{
