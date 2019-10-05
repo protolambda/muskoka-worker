@@ -21,7 +21,7 @@ import (
 	"time"
 )
 
-const storageAPI = "https://storage.googleapis.com/"
+const storageAPI = "https://storage.googleapis.com"
 
 var inputsBucketName string
 var cliCmdName string
