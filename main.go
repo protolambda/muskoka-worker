@@ -162,11 +162,11 @@ func (tr *TransitionMsg) DirPath() string {
 }
 
 func (tr *TransitionMsg) InputsBucketPathStart() string {
-	return fmt.Sprintf("%s/%s", tr.SpecVersion, tr.Key)
+	return fmt.Sprintf("%s/%s/%s", tr.SpecConfig, tr.SpecVersion, tr.Key)
 }
 
 func (tr *TransitionMsg) ResultsBucketPathStart() string {
-	return fmt.Sprintf("%s/%s/%s/%s/%s", tr.SpecVersion, tr.Key, clientName, clientVersion, tr.ResultKey)
+	return fmt.Sprintf("%s/%s/%s/%s/%s/%s", tr.SpecVersion, tr.SpecConfig, tr.Key, clientName, clientVersion, tr.ResultKey)
 }
 
 func (tr *TransitionMsg) LoadFromBucket() error {
