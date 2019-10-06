@@ -199,15 +199,33 @@ type ResultMsg struct {
 	// identifies the transition task
 	Key string `json:"key"`
 	// Result files
-	Files ResultFilesData `json:"files"`
+	Files ResultFilesDataURLS `json:"files"`
 }
 
-type ResultFilesData struct {
-	// urls to the files
+type ResultFilesDataURLS struct {
 	PostState string `json:"post-state"`
 	ErrLog    string `json:"err-log"`
 	OutLog    string `json:"out-log"`
 }
+
+func ResultURL(resultPath string) string {
+	return fmt.Sprintf("%s/%s/%s", storageAPI, resultsBucketName, resultPath)
+}
+
+type ResultFilesDataPaths struct {
+	PostState string
+	ErrLog string
+	OutLog string
+}
+
+func (rd ResultFilesDataPaths) URLs() ResultFilesDataURLS {
+	return ResultFilesDataURLS{
+		PostState: ResultURL(rd.PostState),
+		ErrLog: ResultURL(rd.ErrLog),
+		OutLog: ResultURL(rd.OutLog),
+	}
+}
+
 
 func (tr *TransitionMsg) Execute() error {
 	log.Printf("executing request: %s (%d blocks, spec version %s)\n", tr.Key, tr.Blocks, tr.SpecVersion)
@@ -253,10 +271,10 @@ func (tr *TransitionMsg) Execute() error {
 
 	// upload results
 	bucketPathStart := tr.ResultsBucketPathStart()
-	resultFiles := ResultFilesData{
-		PostState: fmt.Sprintf("%s/%s/%s/post.ssz", storageAPI, resultsBucketName, bucketPathStart),
-		ErrLog:    fmt.Sprintf("%s/%s/%s/std_out_log.txt", storageAPI, resultsBucketName, bucketPathStart),
-		OutLog:    fmt.Sprintf("%s/%s/%s/std_err_log.txt", storageAPI, resultsBucketName, bucketPathStart),
+	resultFiles := ResultFilesDataPaths{
+		PostState: fmt.Sprintf("%s/post.ssz", bucketPathStart),
+		ErrLog:    fmt.Sprintf("%s/std_out_log.txt", bucketPathStart),
+		OutLog:    fmt.Sprintf("%s/std_err_log.txt", bucketPathStart),
 	}
 	{
 		{
@@ -301,7 +319,7 @@ func (tr *TransitionMsg) Execute() error {
 			ClientName:    clientName,
 			ClientVersion: clientVersion,
 			Key:           tr.Key,
-			Files:         resultFiles,
+			Files:         resultFiles.URLs(),
 		}
 		if err := enc.Encode(&reqMsg); err != nil {
 			log.Printf("failed to encode result to JSON message.")
