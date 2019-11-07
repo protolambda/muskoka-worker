@@ -28,3 +28,12 @@ Options:
 
 
 Also see [`muskoka-server`](https://github.com/protolambda/muskoka-server).
+
+## Dockerfile
+
+This code is build in a docker image, for other docker images to extend or extract the executable (`muskoka_worker`) from.
+Dockerhub: [`protolambda/muskoka_worker`](https://hub.docker.com/repository/docker/protolambda/muskoka_worker)
+
+## License
+
+MIT, see [LICENSE](./LICENSE) file.
